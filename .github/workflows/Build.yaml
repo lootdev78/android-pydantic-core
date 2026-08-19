@@ -4,28 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       python_versions:
-        description: 'Python versions to build (comma-separated, e.g. 3.12,3.13,3.14). Leave empty for all (3.9-3.14)'
+        description: "Python versions to build (comma-separated, e.g. 3.12,3.13,3.14). Leave empty for all (3.9-3.14)"
         required: false
-        default: ''
+        default: ""
         type: string
       package_version:
-        description: 'pydantic-core version to build (e.g. 2.48.0). Leave empty to use latest from PyPI'
+        description: "pydantic-core version to build (e.g. 2.48.0). Leave empty to use latest from PyPI"
         required: false
-        default: ''
+        default: ""
         type: string
       ndk_version:
-        description: 'Android NDK version (e.g. 25.2.9519653). Leave empty for default (r25b)'
+        description: "Android NDK version (e.g. 25.2.9519653). Leave empty for default (r25b)"
         required: false
-        default: ''
+        default: ""
         type: string
   schedule:
-    - cron: '0 0 1 * *' # Run monthly on the 1st
+    - cron: "0 0 1 * *"
 
 env:
   PACKAGE_NAME: pydantic-core
-  DEFAULT_NDK_VERSION: '25.2.9519653' # NDK r25b (Stable LTS)
-  ANDROID_API: 24
-  DEFAULT_PYTHON_VERSIONS: '3.9,3.10,3.11,3.12,3.13,3.14'
+  DEFAULT_NDK_VERSION: "25.2.9519653"
+  ANDROID_API: "24"
+  DEFAULT_PYTHON_VERSIONS: "3.9,3.10,3.11,3.12,3.13,3.14"
 
 permissions:
   contents: write
@@ -41,76 +41,75 @@ jobs:
       ndk_version: ${{ steps.resolve.outputs.ndk_version }}
     steps:
       - id: resolve
-        name: Resolve Version, Python list & NDK
+        name: Resolve Version, Python list and NDK
         env:
           INPUT_PACKAGE_VERSION: ${{ inputs.package_version }}
           INPUT_PYTHON_VERSIONS: ${{ inputs.python_versions }}
           INPUT_NDK_VERSION: ${{ inputs.ndk_version }}
+          PKG_NAME: ${{ env.PACKAGE_NAME }}
+          DEFAULT_PY: ${{ env.DEFAULT_PYTHON_VERSIONS }}
+          DEFAULT_NDK: ${{ env.DEFAULT_NDK_VERSION }}
         run: |
-          set -e
+          set -euo pipefail
 
-          # --- Package version ---
-          if [ -n "$INPUT_PACKAGE_VERSION" ]; then
-            VER="$INPUT_PACKAGE_VERSION"
-            echo "Using manually specified version: $VER"
+          if [ -n "${INPUT_PACKAGE_VERSION}" ]; then
+            VER="${INPUT_PACKAGE_VERSION}"
+            echo "Using manually specified version: ${VER}"
           else
             VER=$(python3 -c "
           import urllib.request, json
-          url = 'https://pypi.org/pypi/${{ env.PACKAGE_NAME }}/json'
-          data = json.load(urllib.request.urlopen(url))
+          data = json.load(urllib.request.urlopen('https://pypi.org/pypi/${PKG_NAME}/json'))
           print(data['info']['version'])
           ")
-            echo "Latest PyPI version: $VER"
+            echo "Latest PyPI version: ${VER}"
           fi
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "version=\( {VER}" >> " \){GITHUB_OUTPUT}"
 
-          # --- Python versions ---
-          if [ -n "$INPUT_PYTHON_VERSIONS" ]; then
-            PY_VERS="$INPUT_PYTHON_VERSIONS"
-            echo "Using manually specified Python versions: $PY_VERS"
+          if [ -n "${INPUT_PYTHON_VERSIONS}" ]; then
+            PY_VERS="${INPUT_PYTHON_VERSIONS}"
+            echo "Using manually specified Python versions: ${PY_VERS}"
           else
-            PY_VERS="${{ env.DEFAULT_PYTHON_VERSIONS }}"
-            echo "Using default Python versions: $PY_VERS"
+            PY_VERS="${DEFAULT_PY}"
+            echo "Using default Python versions: ${PY_VERS}"
           fi
-          PY_VERS=$(echo "$PY_VERS" | tr -d ' ')
-          echo "python_versions=$PY_VERS" >> "$GITHUB_OUTPUT"
+          PY_VERS=\( (echo " \){PY_VERS}" | tr -d ' ')
+          echo "python_versions=\( {PY_VERS}" >> " \){GITHUB_OUTPUT}"
 
-          # Build JSON array for matrix: "3.12,3.14" → ["3.12","3.14"]
           PYTHON_MATRIX=$(python3 -c "
-          versions = '''$PY_VERS'''.split(',')
-          print('[' + ','.join(f'\"{v}\"' for v in versions if v) + ']')
+          versions = '''${PY_VERS}'''.split(',')
+          print('[' + ','.join(chr(34) + v + chr(34) for v in versions if v) + ']')
           ")
-          echo "python_matrix=$PYTHON_MATRIX" >> "$GITHUB_OUTPUT"
-          echo "Python matrix JSON: $PYTHON_MATRIX"
+          echo "python_matrix=\( {PYTHON_MATRIX}" >> " \){GITHUB_OUTPUT}"
+          echo "Python matrix JSON: ${PYTHON_MATRIX}"
 
-          # --- NDK version ---
-          if [ -n "$INPUT_NDK_VERSION" ]; then
-            NDK="$INPUT_NDK_VERSION"
-            echo "Using manually specified NDK: $NDK"
+          if [ -n "${INPUT_NDK_VERSION}" ]; then
+            NDK="${INPUT_NDK_VERSION}"
+            echo "Using manually specified NDK: ${NDK}"
           else
-            NDK="${{ env.DEFAULT_NDK_VERSION }}"
-            echo "Using default NDK: $NDK"
+            NDK="${DEFAULT_NDK}"
+            echo "Using default NDK: ${NDK}"
           fi
-          echo "ndk_version=$NDK" >> "$GITHUB_OUTPUT"
+          echo "ndk_version=\( {NDK}" >> " \){GITHUB_OUTPUT}"
 
   build:
-    name: Build \( {{ matrix.arch }} (Py \){{ matrix.python-version }})
+    name: "Build ${{ matrix.arch }} (Py ${{ matrix.python-version }})"
     needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ${{ fromJson(needs.prepare.outputs.python_matrix) }}
-        arch: ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64']
+        arch: ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Rust & Targets
+      - name: Setup Rust and Targets
         run: |
+          set -euo pipefail
           pip install maturin
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source "$HOME/.cargo/env"
+          source "${HOME}/.cargo/env"
           rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
       - name: Cache Cargo Registry
@@ -130,113 +129,126 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install NDK
+        env:
+          NDK_VER: ${{ needs.prepare.outputs.ndk_version }}
         run: |
-          NDK_VER="${{ needs.prepare.outputs.ndk_version }}"
-          yes | sdkmanager "ndk;$NDK_VER" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> $GITHUB_ENV
+          set -euo pipefail
+          yes | sdkmanager "ndk;${NDK_VER}" > /dev/null
+          echo "ANDROID_NDK_HOME=\( {ANDROID_HOME}/ndk/ \){NDK_VER}" >> "${GITHUB_ENV}"
 
-      - name: Build Wheel (Termux Fix)
+      - name: Build Wheel
         id: build_step
+        env:
+          PY_VER: ${{ matrix.python-version }}
+          PKG_VER: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          ANDROID_API: ${{ env.ANDROID_API }}
+          PKG_NAME: ${{ env.PACKAGE_NAME }}
         run: |
-          set -e
-          source "$HOME/.cargo/env"
+          set -euo pipefail
+          source "${HOME}/.cargo/env"
 
-          PY_VER="${{ matrix.python-version }}"
-          PKG_VER="${{ needs.prepare.outputs.version }}"
-          ARCH="${{ matrix.arch }}"
-          export ANDROID_API_LEVEL=${{ env.ANDROID_API }}
+          NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          NDK_SYSROOT="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          export PATH="\( {NDK_BIN}: \){PATH}"
+          export ANDROID_API_LEVEL="${ANDROID_API}"
 
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          NDK_SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          export PATH="$NDK_BIN:$PATH"
-
-          if [ "$ARCH" == "arm64-v8a" ]; then
-             RUST_TARGET="aarch64-linux-android"
-             CC_TARGET="aarch64-linux-android${ANDROID_API}"
-             NDK_LIB_ARCH="aarch64-linux-android"
-             PLAT_TAG="android_${ANDROID_API}_arm64_v8a"
-          elif [ "$ARCH" == "armeabi-v7a" ]; then
-             RUST_TARGET="armv7-linux-androideabi"
-             CC_TARGET="armv7a-linux-androideabi${ANDROID_API}"
-             NDK_LIB_ARCH="arm-linux-androideabi"
-             PLAT_TAG="android_${ANDROID_API}_armeabi_v7a"
-          elif [ "$ARCH" == "x86" ]; then
-             RUST_TARGET="i686-linux-android"
-             CC_TARGET="i686-linux-android${ANDROID_API}"
-             NDK_LIB_ARCH="i686-linux-android"
-             PLAT_TAG="android_${ANDROID_API}_x86"
-          elif [ "$ARCH" == "x86_64" ]; then
-             RUST_TARGET="x86_64-linux-android"
-             CC_TARGET="x86_64-linux-android${ANDROID_API}"
-             NDK_LIB_ARCH="x86_64-linux-android"
-             PLAT_TAG="android_${ANDROID_API}_x86_64"
-          fi
+          case "${ARCH}" in
+            arm64-v8a)
+              RUST_TARGET="aarch64-linux-android"
+              CC_TARGET="aarch64-linux-android${ANDROID_API}"
+              NDK_LIB_ARCH="aarch64-linux-android"
+              PLAT_TAG="android_${ANDROID_API}_arm64_v8a"
+              ;;
+            armeabi-v7a)
+              RUST_TARGET="armv7-linux-androideabi"
+              CC_TARGET="armv7a-linux-androideabi${ANDROID_API}"
+              NDK_LIB_ARCH="arm-linux-androideabi"
+              PLAT_TAG="android_${ANDROID_API}_armeabi_v7a"
+              ;;
+            x86)
+              RUST_TARGET="i686-linux-android"
+              CC_TARGET="i686-linux-android${ANDROID_API}"
+              NDK_LIB_ARCH="i686-linux-android"
+              PLAT_TAG="android_${ANDROID_API}_x86"
+              ;;
+            x86_64)
+              RUST_TARGET="x86_64-linux-android"
+              CC_TARGET="x86_64-linux-android${ANDROID_API}"
+              NDK_LIB_ARCH="x86_64-linux-android"
+              PLAT_TAG="android_${ANDROID_API}_x86_64"
+              ;;
+          esac
 
           CLANG_WRAPPER="${CC_TARGET}-clang"
-          LINKER_VAR="CARGO_TARGET_$(echo "$RUST_TARGET" | tr '[:lower:]-' '[:upper:]_')_LINKER"
-          if [ -f "$NDK_BIN/$CLANG_WRAPPER" ]; then
-             export $LINKER_VAR="$NDK_BIN/$CLANG_WRAPPER"
+          LINKER_VAR="CARGO_TARGET_\( (echo " \){RUST_TARGET}" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          if [ -f "\( {NDK_BIN}/ \){CLANG_WRAPPER}" ]; then
+            export "\( {LINKER_VAR}= \){NDK_BIN}/${CLANG_WRAPPER}"
           else
-             export $LINKER_VAR="$NDK_BIN/clang"
+            export "\( {LINKER_VAR}= \){NDK_BIN}/clang"
           fi
 
           MOCK_DIR="$(pwd)/mock_libs"
-          mkdir -p "$MOCK_DIR"
+          mkdir -p "${MOCK_DIR}"
 
-          "$NDK_BIN/clang" --target=$CC_TARGET -shared \
-            -Wl,-soname,libpython$PY_VER.so \
-            -o "$MOCK_DIR/libpython$PY_VER.so" -xc /dev/null
+          "\( {NDK_BIN}/clang" --target=" \){CC_TARGET}" -shared \
+            -Wl,-soname,"libpython${PY_VER}.so" \
+            -o "\( {MOCK_DIR}/libpython \){PY_VER}.so" -xc /dev/null
 
-          LIBDL_PATH=$(find "$NDK_SYSROOT" -name "libdl.so" | grep "$NDK_LIB_ARCH" | head -n 1)
-          cp "$LIBDL_PATH" "$MOCK_DIR/"
+          LIBDL_PATH=\( (find " \){NDK_SYSROOT}" -name "libdl.so" | grep "${NDK_LIB_ARCH}" | head -n 1)
+          cp "\( {LIBDL_PATH}" " \){MOCK_DIR}/"
 
+          # Write sysconfig via Python (avoids shell $ stripping)
           SYSCONFIG_NAME="_sysconfigdata__linux_${RUST_TARGET}"
-          cat > "\( MOCK_DIR/ \){SYSCONFIG_NAME}.py" <<EOF
-          build_time_vars = {
-              'abiflags': '',
-              'ABIFLAGS': '',
-              'SO': '.so', 'SOABI': 'cpython-$PY_VER', 'EXT_SUFFIX': '.so',
-              'LIBDIR': '$MOCK_DIR',
-              'LDLIBRARY': 'libpython$PY_VER.so',
-              'Py_ENABLE_SHARED': 1,
-              'CC': 'clang', 'CXX': 'clang++',
-              'VERSION': '$PY_VER', 'LDSHARED': 'clang -shared',
-              'LDFLAGS': '-L$MOCK_DIR', 'CCSHARED': '-fPIC', 'GNULD': 'yes',
-              'Py_DEBUG': 0, 'WITH_PYMALLOC': 1,
+          python3 << PYEOF
+          content = """build_time_vars = {
+              "abiflags": "",
+              "ABIFLAGS": "",
+              "SO": ".so",
+              "SOABI": "cpython-${PY_VER}",
+              "EXT_SUFFIX": ".so",
+              "LIBDIR": "${MOCK_DIR}",
+              "LDLIBRARY": "libpython${PY_VER}.so",
+              "Py_ENABLE_SHARED": 1,
+              "CC": "clang",
+              "CXX": "clang++",
+              "VERSION": "${PY_VER}",
+              "LDSHARED": "clang -shared",
+              "LDFLAGS": "-L${MOCK_DIR}",
+              "CCSHARED": "-fPIC",
+              "GNULD": "yes",
+              "Py_DEBUG": 0,
+              "WITH_PYMALLOC": 1,
           }
-          EOF
+          """
+          with open("\( {MOCK_DIR}/ \){SYSCONFIG_NAME}.py", "w") as f:
+              f.write(content)
+          PYEOF
 
-          mkdir -p build_src && cd build_src
-          echo "Downloading source for $PKG_VER..."
-          pip download "${{ env.PACKAGE_NAME }}==$PKG_VER" --no-binary :all: --no-deps
-          tar -xzf pydantic?core-*.tar.gz
-          cd pydantic?core-*/
+          mkdir -p build_src
+          cd build_src
+          echo "Downloading source for ${PKG_VER}..."
+          pip download "\( {PKG_NAME}== \){PKG_VER}" --no-binary :all: --no-deps
+          tar -xzf pydantic*core-*.tar.gz
+          cd pydantic*core-*/
 
-          export PYO3_CROSS_LIB_DIR="$MOCK_DIR"
-          export PYTHONPATH="$MOCK_DIR:$PYTHONPATH"
-          export PYO3_CROSS_PYTHON_VERSION="$PY_VER"
-          export _PYTHON_SYSCONFIGDATA_NAME="$SYSCONFIG_NAME"
+          export PYO3_CROSS_LIB_DIR="${MOCK_DIR}"
+          export PYTHONPATH="\( {MOCK_DIR}: \){PYTHONPATH:-}"
+          export PYO3_CROSS_PYTHON_VERSION="${PY_VER}"
+          export _PYTHON_SYSCONFIGDATA_NAME="${SYSCONFIG_NAME}"
 
-          RUSTFLAGS_VAR="CARGO_TARGET_$(echo "$RUST_TARGET" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
-          export $RUSTFLAGS_VAR="\
-          -L native=$MOCK_DIR \
-          -C link-arg=--target=$CC_TARGET \
-          -C link-arg=-Wl,--no-as-needed \
-          -C link-arg=-lpython$PY_VER \
-          -C link-arg=-Wl,--as-needed \
-          -C link-arg=-Wl,--unresolved-symbols=ignore-all \
-          -C link-arg=-Wl,-rpath=/data/data/com.termux/files/usr/lib"
+          RUSTFLAGS_VAR="CARGO_TARGET_\( (echo " \){RUST_TARGET}" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
+          export "\( {RUSTFLAGS_VAR}=-L native= \){MOCK_DIR} -C link-arg=--target=\( {CC_TARGET} -C link-arg=-Wl,--no-as-needed -C link-arg=-lpython \){PY_VER} -C link-arg=-Wl,--as-needed -C link-arg=-Wl,--unresolved-symbols=ignore-all -C link-arg=-Wl,-rpath=/data/data/com.termux/files/usr/lib"
 
           echo "Starting Maturin Build..."
-          maturin build --release --strip --target "$RUST_TARGET" --interpreter python$PY_VER --skip-auditwheel
+          maturin build --release --strip --target "\( {RUST_TARGET}" --interpreter "python \){PY_VER}" --skip-auditwheel
 
           cd target/wheels
           OLD=$(ls *.whl)
-          NEW=$(echo "\( OLD" | sed -E "s/(-[^-]+)\.whl \)/-${PLAT_TAG}.whl/")
-          mv "$OLD" "$NEW"
-          echo "Produced wheel: $NEW"
-
-          echo "WHEEL_PATH=$(pwd)/$NEW" >> "$GITHUB_OUTPUT"
+          NEW=\( (echo " \){OLD}" | sed -E "s/(-[^-]+)\\.whl\\( /- \){PLAT_TAG}.whl/")
+          mv "\( {OLD}" " \){NEW}"
+          echo "Produced wheel: ${NEW}"
+          echo "WHEEL_PATH=\( (pwd)/ \){NEW}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload Temporary Artifact
         uses: actions/upload-artifact@v4
@@ -264,7 +276,7 @@ jobs:
           tag_name: v${{ needs.prepare.outputs.version }}
           name: \( {{ env.PACKAGE_NAME }} v \){{ needs.prepare.outputs.version }}
           body: |
-            ### Automated Android Build 🤖
+            ### Automated Android Build
 
             **Package:** `${{ env.PACKAGE_NAME }}`
             **Version:** `${{ needs.prepare.outputs.version }}`
@@ -273,7 +285,7 @@ jobs:
 
             **Platform Support:**
             - **OS:** Android (Termux)
-            - **Archs:** `aarch64`, `armv7`, `x86`, `x86_64`
+            - **Archs:** aarch64, armv7, x86, x86_64
             - **Python:** ${{ needs.prepare.outputs.python_versions }}
 
             **Installation:**
@@ -283,8 +295,8 @@ jobs:
 
             **Technical Details:**
             - Built with NDK ${{ needs.prepare.outputs.ndk_version }} (API ${{ env.ANDROID_API }})
-            - Uses Android platform tags (`android_24_*`) per PEP 738 (required for Python 3.13+)
-            - Includes `RPATH` fix for Termux library location
-            - Linked with `--no-as-needed` to ensure `libpython` loading
+            - Uses Android platform tags (android_24_*) per PEP 738
+            - Includes RPATH fix for Termux library location
+            - Linked with --no-as-needed to ensure libpython loading
           files: wheels/*.whl
           make_latest: true
