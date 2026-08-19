@@ -42,45 +42,56 @@ jobs:
     steps:
       - id: resolve
         name: Resolve Version, Python list & NDK
+        env:
+          INPUT_PACKAGE_VERSION: ${{ inputs.package_version }}
+          INPUT_PYTHON_VERSIONS: ${{ inputs.python_versions }}
+          INPUT_NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
+          set -e
+
           # --- Package version ---
-          if [ -n "${{ inputs.package_version }}" ]; then
-            VER="${{ inputs.package_version }}"
+          if [ -n "$INPUT_PACKAGE_VERSION" ]; then
+            VER="$INPUT_PACKAGE_VERSION"
             echo "Using manually specified version: $VER"
           else
-            VER=\( (curl -s https://pypi.org/pypi/ \){{ env.PACKAGE_NAME }}/json | python3 -c "import sys, json; print(json.load(sys.stdin)['info']['version'])")
+            VER=$(python3 -c "
+          import urllib.request, json
+          url = 'https://pypi.org/pypi/${{ env.PACKAGE_NAME }}/json'
+          data = json.load(urllib.request.urlopen(url))
+          print(data['info']['version'])
+          ")
             echo "Latest PyPI version: $VER"
           fi
-          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
 
           # --- Python versions ---
-          if [ -n "${{ inputs.python_versions }}" ]; then
-            PY_VERS="${{ inputs.python_versions }}"
+          if [ -n "$INPUT_PYTHON_VERSIONS" ]; then
+            PY_VERS="$INPUT_PYTHON_VERSIONS"
             echo "Using manually specified Python versions: $PY_VERS"
           else
             PY_VERS="${{ env.DEFAULT_PYTHON_VERSIONS }}"
             echo "Using default Python versions: $PY_VERS"
           fi
           PY_VERS=$(echo "$PY_VERS" | tr -d ' ')
-          echo "python_versions=$PY_VERS" >> $GITHUB_OUTPUT
+          echo "python_versions=$PY_VERS" >> "$GITHUB_OUTPUT"
 
-          PYTHON_MATRIX=$(echo "$PY_VERS" | python3 -c "
-          import sys
-          versions = sys.stdin.read().strip().split(',')
+          # Build JSON array for matrix: "3.12,3.14" → ["3.12","3.14"]
+          PYTHON_MATRIX=$(python3 -c "
+          versions = '''$PY_VERS'''.split(',')
           print('[' + ','.join(f'\"{v}\"' for v in versions if v) + ']')
           ")
-          echo "python_matrix=$PYTHON_MATRIX" >> $GITHUB_OUTPUT
+          echo "python_matrix=$PYTHON_MATRIX" >> "$GITHUB_OUTPUT"
           echo "Python matrix JSON: $PYTHON_MATRIX"
 
           # --- NDK version ---
-          if [ -n "${{ inputs.ndk_version }}" ]; then
-            NDK="${{ inputs.ndk_version }}"
+          if [ -n "$INPUT_NDK_VERSION" ]; then
+            NDK="$INPUT_NDK_VERSION"
             echo "Using manually specified NDK: $NDK"
           else
             NDK="${{ env.DEFAULT_NDK_VERSION }}"
             echo "Using default NDK: $NDK"
           fi
-          echo "ndk_version=$NDK" >> $GITHUB_OUTPUT
+          echo "ndk_version=$NDK" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build \( {{ matrix.arch }} (Py \){{ matrix.python-version }})
@@ -225,7 +236,7 @@ jobs:
           mv "$OLD" "$NEW"
           echo "Produced wheel: $NEW"
 
-          echo "WHEEL_PATH=$(pwd)/$NEW" >> $GITHUB_OUTPUT
+          echo "WHEEL_PATH=$(pwd)/$NEW" >> "$GITHUB_OUTPUT"
 
       - name: Upload Temporary Artifact
         uses: actions/upload-artifact@v4
