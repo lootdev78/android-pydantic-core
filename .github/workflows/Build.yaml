@@ -3,11 +3,6 @@ name: Android Wheels & Release
 on:
   workflow_dispatch:
     inputs:
-      force_build:
-        description: 'Force build even if release exists'
-        required: false
-        default: false
-        type: boolean
       python_versions:
         description: 'Python versions to build (comma-separated, e.g. 3.12,3.13,3.14). Leave empty for all (3.9-3.14)'
         required: false
@@ -36,18 +31,15 @@ permissions:
   contents: write
 
 jobs:
-  check-version:
-    name: Check Version
+  prepare:
+    name: Prepare
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.resolve.outputs.version }}
-      should_build: ${{ steps.check_release.outputs.should_build }}
       python_versions: ${{ steps.resolve.outputs.python_versions }}
       python_matrix: ${{ steps.resolve.outputs.python_matrix }}
       ndk_version: ${{ steps.resolve.outputs.ndk_version }}
     steps:
-      - uses: actions/checkout@v4
-
       - id: resolve
         name: Resolve Version, Python list & NDK
         run: |
@@ -69,12 +61,9 @@ jobs:
             PY_VERS="${{ env.DEFAULT_PYTHON_VERSIONS }}"
             echo "Using default Python versions: $PY_VERS"
           fi
-          # Normalize: remove spaces
           PY_VERS=$(echo "$PY_VERS" | tr -d ' ')
           echo "python_versions=$PY_VERS" >> $GITHUB_OUTPUT
 
-          # Build a proper JSON array for the matrix strategy
-          # "3.12,3.13,3.14" → ["3.12","3.13","3.14"]
           PYTHON_MATRIX=$(echo "$PY_VERS" | python3 -c "
           import sys
           versions = sys.stdin.read().strip().split(',')
@@ -93,38 +82,14 @@ jobs:
           fi
           echo "ndk_version=$NDK" >> $GITHUB_OUTPUT
 
-      - id: check_release
-        name: Check if Release Exists
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FORCE: ${{ inputs.force_build }}
-        run: |
-          VER="${{ steps.resolve.outputs.version }}"
-          TAG="v$VER"
-
-          if [ "$FORCE" == "true" ]; then
-            echo "Force build enabled."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "Release $TAG already exists. Skipping build."
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          else
-            echo "Release $TAG not found. Starting build."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          fi
-
   build:
     name: Build \( {{ matrix.arch }} (Py \){{ matrix.python-version }})
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true'
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ${{ fromJson(needs.check-version.outputs.python_matrix) }}
+        python-version: ${{ fromJson(needs.prepare.outputs.python_matrix) }}
         arch: ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64']
     steps:
       - name: Checkout Repository
@@ -155,7 +120,7 @@ jobs:
 
       - name: Install NDK
         run: |
-          NDK_VER="${{ needs.check-version.outputs.ndk_version }}"
+          NDK_VER="${{ needs.prepare.outputs.ndk_version }}"
           yes | sdkmanager "ndk;$NDK_VER" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VER" >> $GITHUB_ENV
 
@@ -165,9 +130,8 @@ jobs:
           set -e
           source "$HOME/.cargo/env"
 
-          # --- Environment Configuration ---
           PY_VER="${{ matrix.python-version }}"
-          PKG_VER="${{ needs.check-version.outputs.version }}"
+          PKG_VER="${{ needs.prepare.outputs.version }}"
           ARCH="${{ matrix.arch }}"
           export ANDROID_API_LEVEL=${{ env.ANDROID_API }}
 
@@ -175,9 +139,6 @@ jobs:
           NDK_SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           export PATH="$NDK_BIN:$PATH"
 
-          # --- Architecture Config ---
-          # Use Android platform tags (PEP 738) so pip accepts the wheel on
-          # Python 3.13+/3.14 Termux. Older linux_* tags are rejected.
           if [ "$ARCH" == "arm64-v8a" ]; then
              RUST_TARGET="aarch64-linux-android"
              CC_TARGET="aarch64-linux-android${ANDROID_API}"
@@ -200,7 +161,6 @@ jobs:
              PLAT_TAG="android_${ANDROID_API}_x86_64"
           fi
 
-          # --- Configure Linker ---
           CLANG_WRAPPER="${CC_TARGET}-clang"
           LINKER_VAR="CARGO_TARGET_$(echo "$RUST_TARGET" | tr '[:lower:]-' '[:upper:]_')_LINKER"
           if [ -f "$NDK_BIN/$CLANG_WRAPPER" ]; then
@@ -209,20 +169,16 @@ jobs:
              export $LINKER_VAR="$NDK_BIN/clang"
           fi
 
-          # --- Mocking Python (Termux Strategy) ---
           MOCK_DIR="$(pwd)/mock_libs"
           mkdir -p "$MOCK_DIR"
 
-          # 1. Create fake libpython with SONAME
           "$NDK_BIN/clang" --target=$CC_TARGET -shared \
             -Wl,-soname,libpython$PY_VER.so \
             -o "$MOCK_DIR/libpython$PY_VER.so" -xc /dev/null
 
-          # 2. Copy real libdl.so
           LIBDL_PATH=$(find "$NDK_SYSROOT" -name "libdl.so" | grep "$NDK_LIB_ARCH" | head -n 1)
           cp "$LIBDL_PATH" "$MOCK_DIR/"
 
-          # 3. Create Sysconfig File (BUT DO NOT EXPORT VAR YET)
           SYSCONFIG_NAME="_sysconfigdata__linux_${RUST_TARGET}"
           cat > "\( MOCK_DIR/ \){SYSCONFIG_NAME}.py" <<EOF
           build_time_vars = {
@@ -239,23 +195,17 @@ jobs:
           }
           EOF
 
-          # --- Download Source Code (CLEAN ENVIRONMENT) ---
-          # Run pip BEFORE exporting cross-compilation env vars
           mkdir -p build_src && cd build_src
           echo "Downloading source for $PKG_VER..."
           pip download "${{ env.PACKAGE_NAME }}==$PKG_VER" --no-binary :all: --no-deps
           tar -xzf pydantic?core-*.tar.gz
           cd pydantic?core-*/
 
-          # --- APPLY CROSS-COMPILATION ENV VARS NOW ---
           export PYO3_CROSS_LIB_DIR="$MOCK_DIR"
           export PYTHONPATH="$MOCK_DIR:$PYTHONPATH"
           export PYO3_CROSS_PYTHON_VERSION="$PY_VER"
           export _PYTHON_SYSCONFIGDATA_NAME="$SYSCONFIG_NAME"
 
-          # --- Rust Flags ---
-          # 1. --no-as-needed: Forces recording of libpython dependency
-          # 2. -rpath: Hardcodes Termux library path
           RUSTFLAGS_VAR="CARGO_TARGET_$(echo "$RUST_TARGET" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
           export $RUSTFLAGS_VAR="\
           -L native=$MOCK_DIR \
@@ -269,10 +219,8 @@ jobs:
           echo "Starting Maturin Build..."
           maturin build --release --strip --target "$RUST_TARGET" --interpreter python$PY_VER --skip-auditwheel
 
-          # --- Rename Output to correct Android platform tag ---
           cd target/wheels
           OLD=$(ls *.whl)
-          # Replace the final platform tag (everything after the last - before .whl)
           NEW=$(echo "\( OLD" | sed -E "s/(-[^-]+)\.whl \)/-${PLAT_TAG}.whl/")
           mv "$OLD" "$NEW"
           echo "Produced wheel: $NEW"
@@ -288,8 +236,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [check-version, build]
-    if: needs.check-version.outputs.should_build == 'true'
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -303,20 +250,20 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check-version.outputs.version }}
-          name: \( {{ env.PACKAGE_NAME }} v \){{ needs.check-version.outputs.version }}
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: \( {{ env.PACKAGE_NAME }} v \){{ needs.prepare.outputs.version }}
           body: |
             ### Automated Android Build 🤖
 
             **Package:** `${{ env.PACKAGE_NAME }}`
-            **Version:** `${{ needs.check-version.outputs.version }}`
-            **NDK:** `${{ needs.check-version.outputs.ndk_version }}`
-            **Python versions built:** `${{ needs.check-version.outputs.python_versions }}`
+            **Version:** `${{ needs.prepare.outputs.version }}`
+            **NDK:** `${{ needs.prepare.outputs.ndk_version }}`
+            **Python versions built:** `${{ needs.prepare.outputs.python_versions }}`
 
             **Platform Support:**
             - **OS:** Android (Termux)
             - **Archs:** `aarch64`, `armv7`, `x86`, `x86_64`
-            - **Python:** ${{ needs.check-version.outputs.python_versions }}
+            - **Python:** ${{ needs.prepare.outputs.python_versions }}
 
             **Installation:**
             ```bash
@@ -324,7 +271,7 @@ jobs:
             ```
 
             **Technical Details:**
-            - Built with NDK ${{ needs.check-version.outputs.ndk_version }} (API ${{ env.ANDROID_API }})
+            - Built with NDK ${{ needs.prepare.outputs.ndk_version }} (API ${{ env.ANDROID_API }})
             - Uses Android platform tags (`android_24_*`) per PEP 738 (required for Python 3.13+)
             - Includes `RPATH` fix for Termux library location
             - Linked with `--no-as-needed` to ensure `libpython` loading
